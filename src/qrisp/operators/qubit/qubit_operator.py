@@ -30,9 +30,9 @@ from qrisp.operators.qubit.measurement import get_measurement
 from qrisp.operators.qubit.jasp_measurement import get_jasp_measurement
 from qrisp.operators.qubit.commutativity_tools import construct_change_of_basis
 from qrisp import cx, cz, h, s, sx_dg, IterationEnvironment, conjugate, merge, invert
+from qrisp.misc.exceptions import QrispDeprecationWarning
 
 from qrisp.jasp import check_for_tracing_mode, jrange, qache
-
 
 threshold = 1e-9
 
@@ -385,6 +385,11 @@ class QubitOperator(Hamiltonian):
                     res_terms_dict.get(curr_term, 0) + curr_coeff * coeff1 * coeff2
                 )
 
+        res_terms_dict = {
+            term: coeff
+            for term, coeff in res_terms_dict.items()
+            if abs(coeff) >= threshold
+        }
         result = QubitOperator(res_terms_dict)
         return result
 
@@ -456,6 +461,13 @@ class QubitOperator(Hamiltonian):
             # other = QubitOperator({QubitTerm():other})
             for term in self.terms_dict:
                 self.terms_dict[term] *= other
+
+            res_terms_dict = {
+                term: coeff
+                for term, coeff in self.terms_dict.items()
+                if abs(coeff) >= threshold
+            }
+            self.terms_dict = res_terms_dict
             return self
 
         if not isinstance(other, QubitOperator):
@@ -470,6 +482,11 @@ class QubitOperator(Hamiltonian):
                     res_terms_dict.get(curr_term, 0) + curr_coeff * coeff1 * coeff2
                 )
 
+        res_terms_dict = {
+            term: coeff
+            for term, coeff in res_terms_dict.items()
+            if abs(coeff) >= threshold
+        }
         self.terms_dict = res_terms_dict
         return self
 
@@ -835,6 +852,70 @@ class QubitOperator(Hamiltonian):
         if isinstance(res, (float, int)):
             return QubitOperator({QubitTerm({}): res})
         return res
+
+    def _to_pauli_dict(self) -> dict:
+        r"""
+        Return the Pauli expansion of this :class:`QubitOperator` as a dictionary.
+        
+        The operator is first converted to Pauli form using :meth:`to_pauli`.
+        Each dictionary key represents one Pauli string as a tuple of
+        ``(index, pauli)`` pairs, sorted by qubit index. The corresponding value is
+        the coefficient of that Pauli string.
+
+        The empty tuple ``()`` represents the identity term.
+
+        Returns
+        -------
+        dict
+            Dictionary mapping Pauli strings to coefficients.
+
+            The keys have the form
+            ::
+                ((int, str), (int, str), ...)
+       
+            where the integer is the qubit index and the string is one of
+            ``"X"``, ``"Y"``, or ``"Z"``.
+
+            The values are the corresponding scalar coefficients, which may be
+            complex.
+
+        Examples
+        --------
+        We define an operator containing Pauli, ladder, and projector terms and
+        convert it to a dictionary representation of its Pauli expansion.
+
+        ::
+            from qrisp.operators import X, Y, Z, A, C, P1
+            H = 1 + 2 * X(0) + 3 * X(0) * Y(1) * A(2) + C(4) * P1(0)
+            res = H.to_pauli_coeff_dict()
+            print(res) # Yields example output
+
+        Example output:
+        ::
+            {
+                ((0, 'X'),): 2,
+                (): 1,
+                ((0, 'X'), (1, 'Y'), (2, 'X')): 1.5,
+                ((0, 'X'), (1, 'Y'), (2, 'Y')): 1.5j,
+                ((0, 'Z'), (4, 'X')): -0.25,
+                ((0, 'Z'), (4, 'Y')): 0.25j,
+                ((4, 'X'),): 0.25,
+                ((4, 'Y'),): -0.25j}
+
+        """
+        O = self.to_pauli()
+        result = {}
+
+        for term, coeff in O.terms_dict.items():
+            factors = tuple(
+                sorted(
+                    (int(index), str(pauli))
+                    for index, pauli in term.factor_dict.items()
+                )
+            )
+            result[factors] = result.get(factors, 0) + coeff
+
+        return result
 
     def adjoint(self):
         """
@@ -1540,110 +1621,6 @@ class QubitOperator(Hamiltonian):
 
         return var * alpha_n
 
-    def get_measurement(
-        self,
-        qarg,
-        precision=0.01,
-        backend=None,
-        compile=True,
-        compilation_kwargs={},
-        subs_dic={},
-        precompiled_qc=None,
-        diagonalisation_method="commuting_qw",
-        measurement_data=None,  # measurement settings
-    ):
-        r"""
-
-        .. warning::
-
-            This method will no longer be supported in a later release of Qrisp. Instead please migrate to :meth:`expectation_value <qrisp.operators.qubit.QubitOperator.expectation_value>`.
-
-
-        This method returns the expected value of a Hamiltonian for the state
-        of a quantum argument. Note that this method measures the **hermitized**
-        version of the operator:
-
-        .. math::
-
-            H = (O + O^\dagger)/2
-
-
-        Parameters
-        ----------
-        qarg : :ref:`QuantumVariable` or list[Qubit]
-            The quantum argument to evaluate the Hamiltonian on.
-        precision : float, optional
-            The precision with which the expectation of the Hamiltonian is to be evaluated.
-            The default is 0.01. The number of shots scales quadratically with the inverse precision.
-        backend : :ref:`BackendClient`, optional
-            The backend on which to evaluate the quantum circuit. The default can be
-            specified in the file default_backend.py.
-        compile : bool, optional
-            Boolean indicating if the .compile method of the underlying QuantumSession
-            should be called before. The default is ``True``.
-        compilation_kwargs  : dict, optional
-            Keyword arguments for the compile method. For more details check
-            :meth:`QuantumSession.compile <qrisp.QuantumSession.compile>`. The default
-            is ``{}``.
-        subs_dic : dict, optional
-            A dictionary of Sympy symbols and floats to specify parameters in the case
-            of a circuit with unspecified, :ref:`abstract parameters<QuantumCircuit>`.
-            The default is ``{}``.
-        precompiled_qc : QuantumCircuit, optional
-            A precompiled quantum circuit.
-        diagonalisation_method : str, optional
-            Specifies the method for grouping and diagonalizing the QubitOperator.
-            Available are ``commuting_qw``, i.e., the operator is grouped based on qubit-wise commutativity of terms,
-            and ``commuting``, i.e., the operator is grouped based on commutativity of terms.
-            The default is ``commuting_qw``.
-        measurement_data : QubitOperatorMeasurement
-            Cached data to accelerate the measurement procedure. Automatically generated by default.
-
-        Raises
-        ------
-        Exception
-            If the containing QuantumSession is in a quantum environment, it is not
-            possible to execute measurements.
-
-        Returns
-        -------
-        float
-            The expected value of the Hamiltonian.
-
-        Examples
-        --------
-
-        We define a Hamiltonian, and measure its expected value for the state of a :ref:`QuantumVariable`.
-
-        ::
-
-            from qrisp import QuantumVariable, h
-            from qrisp.operators.qubit import X,Y,Z
-            qv = QuantumVariable(2)
-            h(qv)
-            H = Z(0)*Z(1)
-            res = H.get_measurement(qv)
-            print(res)
-            #Yields 0.0011251406425802912
-
-        """
-
-        warnings.warn(
-            "DeprecationWarning: This method will no longer be supported in a later release of Qrisp. Instead please migrate to .expectation_value."
-        )
-
-        return get_measurement(
-            self,
-            qarg,
-            precision=precision,
-            backend=backend,
-            compile=compile,
-            compilation_kwargs=compilation_kwargs,
-            subs_dic=subs_dic,
-            precompiled_qc=precompiled_qc,
-            diagonalisation_method=diagonalisation_method,
-            measurement_data=measurement_data,
-        )
 
     def expectation_value(
         self,
@@ -1686,7 +1663,7 @@ class QubitOperator(Hamiltonian):
             Available are ``commuting_qw``, i.e., the operator is grouped based on qubit-wise commutativity of terms,
             and ``commuting``, i.e., the operator is grouped based on commutativity of terms.
             The default is ``commuting_qw``.
-        backend : :ref:`BackendClient`, optional
+        backend : BackendLike, optional
             The backend on which to evaluate the quantum circuit. The default can be
             specified in the file default_backend.py.
         compile : bool, optional
@@ -1760,6 +1737,67 @@ class QubitOperator(Hamiltonian):
 
             print(main())
             # Yields: 0.010126265783222899
+
+        **Inspecting the circuits sent to the backend**
+
+        When evaluating an expectation value, the operator is grouped by
+        commutativity, change-of-basis gates are appended to the state
+        preparation circuit, and one circuit per group is submitted to
+        the backend — details that are not obvious from the operator
+        expression.  You can inspect these circuits by passing a
+        :class:`~qrisp.interface.QrispSimulatorBackend` with a
+        :class:`~qrisp.PassManager` that ends with
+        :func:`~qrisp.visualize`:
+
+        .. code-block:: python
+
+            from qrisp import QuantumFloat, ry, PassManager, visualize, decompose
+            from qrisp.operators import X, Z
+            from qrisp.interface import QrispSimulatorBackend
+            import numpy as np
+
+            def state_prep(theta):
+                qv = QuantumFloat(2)
+                ry(theta, qv)
+                return qv
+
+            H = X(0)*Z(1) + Z(0)*X(1) + X(0)
+
+            pm = PassManager()
+            pm += decompose()
+            pm += visualize
+            backend = QrispSimulatorBackend(pm=pm)
+
+            ev_function = H.expectation_value(state_prep, backend=backend)
+            result = ev_function(np.pi/2)
+
+        .. code-block:: none
+
+                   ┌─────────┐┌───┐┌─┐
+             qv.0: ┤ Ry(π/2) ├┤ H ├┤M├
+                   ├─────────┤└┬─┬┘└╥┘
+             qv.1: ┤ Ry(π/2) ├─┤M├──╫─
+                   └─────────┘ └╥┘  ║ 
+            cb_15: ═════════════╬═══╩═
+                                ║     
+            cb_16: ═════════════╩═════
+                                    
+                   ┌─────────┐     ┌─┐
+             qv.0: ┤ Ry(π/2) ├─────┤M├───
+                   ├─────────┤┌───┐└╥┘┌─┐
+             qv.1: ┤ Ry(π/2) ├┤ H ├─╫─┤M├
+                   └─────────┘└───┘ ║ └╥┘
+            cb_21: ═════════════════╩══╬═
+                                       ║ 
+            cb_22: ════════════════════╩═
+
+        The operator contains three terms.  ``X(0)*Z(1)`` and ``X(0)``
+        commute qubit-wise and are measured together in the first circuit
+        (an H gate rotates X to Z on qubit 0).  ``Z(0)*X(1)`` does not
+        commute with the others and requires a separate circuit (with an
+        H gate on qubit 1).  :func:`~qrisp.visualize` reveals exactly
+        which circuits reach the backend and how the basis rotations are
+        applied.
 
         """
         from qrisp import QuantumVariable
@@ -2264,128 +2302,3 @@ class QubitOperator(Hamiltonian):
             coefficients.append(np.abs(coeff_))
 
         return unitaries, np.array(coefficients, dtype=float)
-
-    @qache
-    def pauli_block_encoding(self):
-        r"""
-        Returns a :ref:`BlockEncoding` of the operator using the LCU (Linear Combination of Unitaries) protocol.
-
-        For a Pauli block encoding, consider an $n$-qubit Hamiltonian expressed as a linear combination of Pauli operators:
-
-        .. math::
-
-            H = \sum_{i=0}^{M-1} \alpha_i P_i
-
-        where $\alpha_i \ge 0$ are real coefficients such that $\sum_i \alpha_i = \alpha$,
-        and $P_i$ are Pauli strings acting on $n$ qubits (including their respective signs).
-
-        The block encoding unitary is constructed via the LCU protocol:
-
-        .. math::
-
-            U = \text{PREP} \cdot \text{SEL} \cdot \text{PREP}^{\dagger}
-
-        where:
-
-        * **SEL** (Select, in Qrisp: :ref:`q_switch <qswitch>`) applies each Pauli string $P_i$ conditioned on the auxiliary variable state $\ket{i}_a$:
-
-        .. math::
-
-            \text{SEL} = \sum_{i=0}^{M-1} \ket{i}\bra{i} \otimes P_i
-
-        * **PREP** (Prepare) prepares the state representing the coefficients:
-
-        .. math::
-
-            \text{PREP} \ket{0}_a = \sum_{i=0}^{M-1} \sqrt{\frac{\alpha_i}{\alpha}} \ket{i}_a
-
-        Returns
-        -------
-        BlockEncoding
-            A BlockEncoding representing the Hermitian part $(O+O^{\dagger})/2$.
-
-        Notes
-        -----
-        - **Normalization**: The block-encoding normalization factor is $\alpha = \sum_i \alpha_i$.
-
-        Examples
-        --------
-
-        We apply a Hermitian matrix to a quantum state via a Pauli :ref:`BlockEncoding`.
-
-        ::
-
-            from qrisp import *
-            from qrisp.operators import QubitOperator
-            import numpy as np
-
-            m = 2
-            A = np.eye(2**m, k=1)
-            A = A + A.T
-
-            print(A)
-            #[[0. 1. 0. 0.]
-            # [1. 0. 1. 0.]
-            # [0. 1. 0. 1.]
-            # [0. 0. 1. 0.]]
-
-        The matrix $A$ encodes the mapping $\ket{0}\rightarrow\ket{1}$, $\ket{k}\rightarrow\ket{k-1}+\ket{k+1}$ for $k=1,\dotsc,2^m-2$, $\ket{2^m-1}\rightarrow\ket{2^m-2}$.
-
-        We apply the matrix $A$ to a :ref:`QuantumFloat` in supersosition state $\ket{0}+\dotsb+\ket{2^m-1}$ via the Pauli :ref:`BlockEncoding` of the corresponding QubitOperator $H$.
-        (To ensure compatibility with Qrisp's QuantumFloat, we use little-endian encoding when representing the matrix as a QubitOperator.)
-
-        To illustrate the result, we actually create an entangled state
-
-        .. math::
-
-            \sum_{k=0}^{2^m-1}\ket{i}_{a}\ket{i}_b
-
-        of QuantumFloats $a, b$, and apply the matrix $A$ to the variable $b$.
-
-        ::
-
-            H = QubitOperator.from_matrix(A, reverse_endianness=True)
-            BE = H.pauli_block_encoding()
-            # Short: BE = BlockEncoding.from_matrix(A)
-
-            @RUS
-            def inner():
-
-                a = QuantumFloat(2)
-                h(a)
-
-                b = QuantumFloat(2)
-                cx(a,b)
-
-                # Use BlockEncoding to apply matrix A to state b.
-                ancs = BE.apply(b)
-
-                # Pauli block encoding has one ancilla variable.
-                success_bool = measure(ancs[0]) == 0
-                reset(ancs[0])
-                ancs[0].delete()
-
-                return success_bool, a, b
-
-            @terminal_sampling
-            def main():
-
-                a, b = inner()
-
-                return a, b
-
-            main()
-            #{(1.0, 2.0): 0.16666667660077444,
-            # (2.0, 1.0): 0.16666667660077444,
-            # (0.0, 1.0): 0.1666666616996128,
-            # (1.0, 0.0): 0.1666666616996128,
-            # (2.0, 3.0): 0.1666666616996128,
-            # (3.0, 2.0): 0.1666666616996128}
-
-        The ``inner`` function is equipped with the :ref:`RUS` decorator. This means that the routine is run repeatedly until the ancilla variable is measured in state $\ket{0}$, i.e.,
-        the matrix $A$ is successfully applied.
-
-        """
-        from qrisp.block_encodings import BlockEncoding
-
-        return BlockEncoding.from_operator(self)

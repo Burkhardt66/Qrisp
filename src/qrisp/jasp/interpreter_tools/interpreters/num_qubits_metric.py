@@ -29,9 +29,7 @@ from qrisp.jasp.interpreter_tools.interpreters.profiling_interpreter import (
     eval_jaxpr,
     make_profiling_eqn_evaluator,
 )
-from qrisp.jasp.interpreter_tools.interpreters.utilities import (
-    get_quantum_operations,
-)
+from qrisp.jasp.interpreter_tools.call_graph_analysis import analyze_call_graph
 from qrisp.jasp.jasp_expression import Jaspr
 from qrisp.jasp.primitives import (
     AbstractQubitArray,
@@ -63,30 +61,55 @@ class NumQubitsMetric(BaseMetric):
     meas_behavior : Callable
         The measurement behavior function.
 
-    profiling_dic : dict
-        The profiling dictionary mapping quantum operations to indices.
-
     max_allocations : int
         The maximum number of qubit allocations/deallocations supported by the profiler.
 
     """
 
-    def __init__(
-        self,
-        meas_behavior: Callable,
-        profiling_dic: dict,
-        max_allocations: int = 1000,
-    ):
+    def __init__(self, meas_behavior: Callable, max_allocations: int = 1000):
         """Initialize the NumQubitsMetric."""
 
-        super().__init__(meas_behavior=meas_behavior, profiling_dic=profiling_dic)
+        super().__init__(meas_behavior=meas_behavior)
 
-        self._max_allocations = max_allocations
+        self._max_allocations: int = max_allocations
 
     @property
     def max_allocations(self) -> int:
         """Return the maximum number of qubit allocations/deallocations supported by the profiler."""
         return self._max_allocations
+
+    def cache_key(self) -> Tuple[Callable, int]:
+        return (self.meas_behavior, self._max_allocations)
+
+    @classmethod
+    def from_cache_key(cls, cache_key) -> "NumQubitsMetric":
+        meas_behavior, max_allocations = cache_key
+        return cls(meas_behavior, max_allocations)
+
+    def initial_metric(self) -> Tuple[jnp.ndarray, int, bool]:
+
+        # Here is the explanation of the metric data structure:
+
+        # - allocations_array: a JAX array of integers, where each entry represents the
+        #   size of a qubit allocation (positive) or deallocation (negative).
+        #   The length of this array is equal to `max_allocations`,
+        #   which is the maximum number of allocations/deallocations we want to track.
+        #
+        # - allocations_counter_index: a JAX integer scalar that keeps track of how many
+        #   allocations/deallocations have been performed so far. It indicates the next
+        #   index in the `allocations_array` where the next allocation/deallocation size should be recorded.
+        #
+        # - invalid: a JAX boolean scalar that indicates whether the number of
+        #   allocations/deallocations has exceeded the maximum supported.
+        allocations_array = jnp.zeros(self.max_allocations, dtype=jnp.int64)
+        allocations_counter_index = jnp.int64(0)
+        invalid = jnp.bool_(False)
+
+        return allocations_array, allocations_counter_index, invalid
+
+    ##############################################################
+    ### Quantum primitive handlers
+    ##############################################################
 
     def handle_create_qubits(self, invalues, eqn, context_dic):
 
@@ -203,7 +226,6 @@ class NumQubitsMetric(BaseMetric):
         return metric_data
 
     def handle_parity(self, invalues, eqn, context_dic):
-        """Handle the `jasp.parity` primitive"""
 
         # Parity is a classical operation on measurement results
         # Compute XOR and handle expectation
@@ -257,8 +279,11 @@ def extract_num_qubits(res: Tuple, jaspr: Jaspr, _) -> dict:
 
 @lru_cache(int(1e5))
 def get_num_qubits_profiler(
-    jaspr: Jaspr, meas_behavior: Callable, max_allocations: int = 1000
-) -> Tuple[Callable, None]:
+    jaspr: Jaspr,
+    meas_behavior: Callable,
+    max_allocations: int = 1000,
+    callback_threshold: int | None = None,
+) -> tuple[Callable, None]:
     """
     Build a num qubits profiling computer for a given Jaspr.
 
@@ -274,20 +299,27 @@ def get_num_qubits_profiler(
         The maximum number of qubit allocations/deallocations supported by the profiler.
         Default is 1000.
 
+    callback_threshold : int | None, optional
+        Minimum value of ``call_count * inlined_eqn_count`` required to
+        trigger ``jax.pure_callback`` wrapping.  ``None`` (default)
+        disables callbacks entirely (fastest execution).  ``0`` wraps
+        every reused sub-jaxpr (fastest compilation).
+
     Returns
     -------
     Tuple[Callable, None]
         A num qubits profiler function and None as auxiliary data.
 
     """
-    quantum_operations = get_quantum_operations(jaspr)
-    profiling_dic = {quantum_operations[i]: i for i in range(len(quantum_operations))}
 
-    if "measure" not in profiling_dic:
-        profiling_dic["measure"] = -1
+    num_qubits_metric = NumQubitsMetric(meas_behavior, max_allocations)
 
-    num_qubits_metric = NumQubitsMetric(meas_behavior, profiling_dic, max_allocations)
-    profiling_eqn_evaluator = make_profiling_eqn_evaluator(num_qubits_metric)
+    # Analyze the call graph to identify reused sub-jaxprs.  The resulting
+    # stats are threaded into the profiling evaluator so that frequently
+    # called, large sub-jaxprs can be wrapped in ``jax.pure_callback``
+    # to avoid XLA compilation blowup (see profiling_interpreter.py).
+    _, call_graph_stats = analyze_call_graph(jaspr)
+    profiling_eqn_evaluator = make_profiling_eqn_evaluator(num_qubits_metric, call_graph_stats, callback_threshold)
     jitted_evaluator = jax.jit(eval_jaxpr(jaspr, eqn_evaluator=profiling_eqn_evaluator))
 
     def num_qubits_profiler(*args):
@@ -297,31 +329,10 @@ def get_num_qubits_profiler(
 
         STATIC_TYPES = (str, QubitOperator, FermionicOperator, types.FunctionType)
 
-        # Here is the explanation of the metric data structure:
-
-        # - allocations_array: a JAX array of integers, where each entry represents the
-        #   size of a qubit allocation (positive) or deallocation (negative).
-        #   The length of this array is equal to `max_allocations`,
-        #   which is the maximum number of allocations/deallocations we want to track.
-        #
-        # - allocations_counter_index: a JAX integer scalar that keeps track of how many
-        #   allocations/deallocations have been performed so far. It indicates the next
-        #   index in the `allocations_array` where the next allocation/deallocation size should be recorded.
-        #
-        # - invalid: a JAX boolean scalar that indicates whether the number of
-        #   allocations/deallocations has exceeded the maximum supported.
-        allocations_array = jnp.zeros(max_allocations, dtype=jnp.int64)
-        allocations_counter_index = jnp.int64(0)
-        invalid = jnp.bool_(False)
-
-        initial_metric_value = (
-            allocations_array,
-            allocations_counter_index,
-            invalid,
-        )
+        initial_metric = num_qubits_metric.initial_metric()
 
         filtered_args = [
-            x for x in args + (initial_metric_value,) if type(x) not in STATIC_TYPES
+            x for x in args + (initial_metric,) if type(x) not in STATIC_TYPES
         ]
         return jitted_evaluator(*filtered_args)
 

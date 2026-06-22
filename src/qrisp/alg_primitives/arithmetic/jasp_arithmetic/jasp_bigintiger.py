@@ -136,6 +136,9 @@ class BigInteger:
         BigInteger
             Fixed-width representation of `n` modulo 2^(32*size).
         """
+        if n < 0:
+            raise ValueError(f"Input must be non-negative, got {n}.")
+    
         digits = []
         for i in range(size):
             digits.append(n % BASE)
@@ -200,6 +203,48 @@ class BigInteger:
         --------
         BigInteger.create : JAX-compatible constructor.
         """
+        return BigInteger.create(n, size)
+
+    @staticmethod
+    def coerce(n, size):
+        """
+        Coerce ``n`` into a fixed-width BigInteger of ``size`` limbs.
+
+        Python integers are routed through ``create_static`` so very large
+        constants remain usable even when they exceed JAX's host int64 range.
+        Traced / array-like values still use ``create``.
+
+        If ``n`` is already a BigInteger whose limb count matches ``size``,
+        it is returned unchanged.  If the limb count is smaller, the value
+        is zero-padded.  If it is larger, a ``ValueError`` is raised
+        (truncation could silently discard significant bits).
+
+        Parameters
+        ----------
+        n : int, BigInteger, or array-like
+            Value to coerce.
+        size : int
+            Desired number of uint32 limbs.
+
+        Returns
+        -------
+        BigInteger
+            Fixed-width representation with exactly ``size`` limbs.
+        """
+        if isinstance(n, BigInteger):
+            cur = n.digits.shape[0]
+            if cur == size:
+                return n
+            if cur > size:
+                raise ValueError(
+                    f"BigInteger has {cur} limbs but target size is {size}; "
+                    "truncation is not allowed (would lose significant bits)."
+                )
+            # cur < size: zero-pad
+            pad = jnp.zeros(size - cur, dtype=n.digits.dtype)
+            return BigInteger(jnp.concatenate([n.digits, pad], axis=0))
+        if isinstance(n, int):
+            return BigInteger.create_static(n, size)
         return BigInteger.create(n, size)
 
     @jax.jit
@@ -756,6 +801,27 @@ class BigInteger:
             other = BigInteger.create(other, self.digits.shape[0])
         r, q = self.remainder_division(other)
         return r
+
+    def __rmod__(self, other):
+        """
+        Reflected modulo: ``other % self``.
+
+        Converts `other` to a BigInteger with the same width as `self`,
+        then computes ``other % self``.
+
+        Parameters
+        ----------
+        other : int or jnp.integer
+            Dividend.
+
+        Returns
+        -------
+        BigInteger
+            Remainder of ``other // self``.
+        """
+        if not isinstance(other, BigInteger):
+            other = BigInteger.coerce(other, self.digits.shape[0])
+        return other % self
 
     @jax.jit
     def __floordiv__(self, other: "BigInteger"):

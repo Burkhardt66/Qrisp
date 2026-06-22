@@ -16,8 +16,11 @@
 ********************************************************************************
 """
 
+import pytest
+
 from qrisp import *
 import jax.numpy as jnp
+from qrisp.alg_primitives.arithmetic.adders import gidney_adder
 
 def test_jrange():
     
@@ -128,8 +131,9 @@ def test_jrange():
         x(qv[0])
         
         base_qb = qv[0]
-        for i in jrange(1, qv.size-1, 2):
-            cx(base_qb, qv[i+1])
+        # Simulate step = 2
+        for k in jrange((qv.size-1)//2):
+            cx(base_qb, qv[2*k+2])
             
         return measure(qv)
     jaspr = make_jaspr(test_function)(100)
@@ -197,6 +201,17 @@ def test_jrange():
         return measure(qv)
 
     assert main() == 31
+
+    # Test that jrange with 3 arguments emits deprecation warning and raises TypeError
+    def test_step_removed():
+        qv = QuantumVariable(5)
+        for i in jrange(0, 5, 2):
+            x(qv[i])
+        return measure(qv)
+
+    with pytest.warns(Warning, match="has been removed"):
+        with pytest.raises(TypeError, match="jrange takes 1 or 2 arguments"):
+            make_jaspr(test_step_removed)()
 
 
 def test_cl_control_env():
@@ -322,7 +337,8 @@ def test_cl_control_env():
         qf = QuantumFloat(5)
         
         with invert():
-            jasp_cq_gidney_adder(3, qf)
+            from qrisp.alg_primitives.arithmetic.adders import gidney_adder
+            gidney_adder(3, qf)
             
         return measure(qf)
     

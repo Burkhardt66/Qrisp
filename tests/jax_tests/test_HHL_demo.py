@@ -16,6 +16,7 @@
 ********************************************************************************
 """
 
+
 def test_HHL_demo():
 
     import jax
@@ -257,6 +258,8 @@ def test_HHL_demo():
     assert np.linalg.norm(np.abs(x_)-np.abs(x)) < 1e-3
 
     ############################################################
+
+    np.random.seed(42)  # Deterministic for reproducible test results
 
     def hermitian_matrix_with_power_of_2_eigenvalues(n):
         # Generate eigenvalues as inverse powers of 2.

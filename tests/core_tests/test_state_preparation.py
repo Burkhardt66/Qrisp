@@ -24,7 +24,7 @@ from jax.typing import ArrayLike
 from qrisp import QuantumFloat, QuantumVariable
 from qrisp.alg_primitives.state_preparation.prepare_func import prepare_qswitch
 from qrisp.jasp import terminal_sampling
-from qrisp.misc.utility import _EPSILON, swap_endianness
+from qrisp.misc.utility import EPSILON, swap_endianness
 
 ########################################################
 ### Test state preparation with array (based on qswitch)
@@ -57,6 +57,9 @@ def _compute_statevector_logical_qubits(
     if big_endianness is False:
         logical_amplitudes = swap_endianness(logical_amplitudes, qv.size)
     return logical_amplitudes
+
+
+np.random.seed(42)  # Deterministic for reproducible test results
 
 
 def _gen_real_vector(n):
@@ -169,7 +172,7 @@ class TestStatePreparationQSwitch:
         """Test state preparation of a state with near-zero amplitudes."""
 
         qv = QuantumVariable(3)
-        array = jnp.array([1.0, _EPSILON, 0, 0, 0, _EPSILON * 1j, -_EPSILON, 0])
+        array = jnp.array([1.0, EPSILON, 0, 0, 0, EPSILON * 1j, -EPSILON, 0])
         qv.init_state(array, method="qswitch")
 
         logical_sv = _compute_statevector_logical_qubits(qv)

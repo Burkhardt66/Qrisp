@@ -230,7 +230,7 @@ class Jaspr(ClosedJaxpr):
         else:
             ctrl_jaspr = self.ctrl_jaspr.copy()
 
-        res = Jaspr(
+        kwargs = dict(
             permeability=self.permeability,
             isqfree=self.isqfree,
             ctrl_jaspr=ctrl_jaspr,
@@ -241,6 +241,10 @@ class Jaspr(ClosedJaxpr):
             effects=self.effects,
             debug_info=self.debug_info,
         )
+        if self.consts:
+            kwargs["consts"] = list(self.consts)
+
+        res = Jaspr(**kwargs)
 
         res.envs_flattened = self.envs_flattened
 
@@ -674,21 +678,21 @@ class Jaspr(ClosedJaxpr):
         qs.abs_qst = new_abs_qst
         return res
 
-    def count_ops(self, *args, meas_behavior):
+    def count_ops(self, *args, meas_behavior, callback_threshold=None):
         from qrisp.jasp.evaluation_tools import profile_jaspr
 
-        return profile_jaspr(self, "count_ops", meas_behavior)(*args)
+        return profile_jaspr(self, "count_ops", meas_behavior, callback_threshold=callback_threshold)(*args)
 
-    def depth(self, *args, meas_behavior, max_qubits=1024):
+    def depth(self, *args, meas_behavior, max_qubits=1024, callback_threshold=None):
         from qrisp.jasp.evaluation_tools import profile_jaspr
 
-        return profile_jaspr(self, "depth", meas_behavior, max_qubits=max_qubits)(*args)
+        return profile_jaspr(self, "depth", meas_behavior, max_qubits=max_qubits, callback_threshold=callback_threshold)(*args)
 
-    def num_qubits(self, *args, meas_behavior, max_allocations=1000):
+    def num_qubits(self, *args, meas_behavior, max_allocations=1000, callback_threshold=None):
         from qrisp.jasp.evaluation_tools import profile_jaspr
 
         return profile_jaspr(
-            self, "num_qubits", meas_behavior, max_allocations=max_allocations
+            self, "num_qubits", meas_behavior, max_allocations=max_allocations, callback_threshold=callback_threshold
         )(*args)
 
     def embedd(self, *args, name=None, inline=False):
@@ -722,6 +726,7 @@ class Jaspr(ClosedJaxpr):
         """
         Leverages the Catalyst pipeline to compile a QIR representation of
         this function and executes that function using the Catalyst QIR runtime.
+        Requires the Catalyst package to be installed (``pip install qrisp[catalyst]``).
 
         Parameters
         ----------
@@ -774,6 +779,7 @@ class Jaspr(ClosedJaxpr):
     def to_qir(self):
         """
         Compiles the Jaspr to QIR using the `Catalyst framework <https://docs.pennylane.ai/projects/catalyst/en/stable/index.html>`__.
+        Requires the Catalyst package to be installed (``pip install qrisp[catalyst]``).
 
         Parameters
         ----------
@@ -1053,11 +1059,10 @@ class Jaspr(ClosedJaxpr):
 
         return jaspr_to_qir(self.flatten_environments())
 
-    def to_mlir(self):
+    def to_mlir(self, lower_stablehlo = False):
         """
         Compiles the Jaspr to an xDSL module using the Jasp Dialect.
-        Requires the xDSL package to be installed (``pip install xdsl``).
-
+        Requires the xDSL package to be installed (``pip install qrisp[xdsl]``).
 
         .. note::
 
@@ -1074,6 +1079,14 @@ class Jaspr(ClosedJaxpr):
                 from xdsl.printer import Printer
                 Printer().print_op(xdsl_module)
 
+        Parameters
+        ----------
+        lower_stablehlo : bool, optional
+            If True, runs additional MLIR passes to lower StableHLO operations 
+            (like arithmetic and data operations) to lower-level dialects such 
+            as linalg, arith, and tensor. StableHLO control flow involving 
+            quantum types is preserved and rewritten to SCF by xDSL.
+            The default is False.
 
         Returns
         -------
@@ -1124,11 +1137,12 @@ class Jaspr(ClosedJaxpr):
         """
         from qrisp.jasp.mlir import jaspr_to_mlir
 
-        return jaspr_to_mlir(self)
+        return jaspr_to_mlir(self, lower_stablehlo)
 
     def to_catalyst_mlir(self):
         """
         Compiles the Jaspr to MLIR using the `Catalyst dialect <https://docs.pennylane.ai/projects/catalyst/en/stable/index.html>`__.
+        Requires the Catalyst package to be installed (``pip install qrisp[catalyst]``).
 
         Parameters
         ----------
@@ -1321,6 +1335,7 @@ class Jaspr(ClosedJaxpr):
     def to_catalyst_jaxpr(self):
         """
         Compiles the jaspr to the corresponding `Catalyst jaxpr <https://docs.pennylane.ai/projects/catalyst/en/stable/index.html>`__.
+        Requires the Catalyst package to be installed (``pip install qrisp[catalyst]``).
 
         Parameters
         ----------
